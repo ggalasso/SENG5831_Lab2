@@ -170,7 +170,6 @@ void process_received_string(const char* buffer)
             time_period = value;
             break;
         case 't':
-            //target = value;
             target_position = global_counts_m1 + value;
             length = sprintf( tempBuffer, "Target Loc:% 05ld Current Loc:% 05ld\r\n", target_position, global_counts_m1);
             print_usb( tempBuffer, length );

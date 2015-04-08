@@ -1,45 +1,39 @@
 #include <pololu/orangutan.h>
 #include "menu.h"
 #include "main.h"
-//#include "../OrangutanDigital/OrangutanDigital.h"       // digital I/O routines
-//#include "../OrangutanResources/include/OrangutanModel.h"
+
 
 /*
  * Giovanni Galasso
  * SENG5831 Spring 2015
- * HW3
+ * Lab2
  *
- * I had some issues getting the encoder counts to print correctly. It works fine
- * using the function below, up until the int's top number. So I tried using a bigger
- * variable and resetting the counts every time we checked for them, but going in reverse
- * came up with odd results. 
+ * All write up info can be found in the README_Lab2 file.
+ *
+ *
+ *
  * http://www.pololu.com/docs/0J20
  * http://www.pololu.com
  * http://forum.pololu.com
  */
 
-int ROTATION_COUNT = 2249;
+//Not necessary but rotation count is 2249 encoder counts. If we were converting
+//to degrees we would have used this.
+//int ROTATION_COUNT = 2249;
 
+//Last encoder value
 volatile long global_last_enc_value = 0;
+//Current velocity
 volatile long global_cur_velo;
-
+//Comp A ISR counter
 volatile int global_compa_counter = 0;
-
 volatile int global_m1a;
-//static char global_m2a;
 volatile int global_m1b;
-//static char global_m2b;
-
+//Global encoder counts for motor
 volatile long global_counts_m1;
-//static int global_counts_m2;
-
 volatile int global_error_m1;
-//static char global_error_m2;
-
 volatile int global_last_m1a_val;
-//static char global_last_m2a_val;
 volatile int global_last_m1b_val;
-//static char global_last_m2b_val;
 
 
 #define BIT_M1_ENCA (1 << 2)
@@ -62,29 +56,24 @@ volatile int global_last_m1b_val;
 //PCICR: 0x08 -> PCIE3
 //PCIFR -> flag register
 
-/*
-DDRC = 0xB0;
-DDRD &= ~(BIT_M1A | BIT_M1B | BIT_M2A | BIT_M2B);
-PCMSK3 = (0 << PCINT31) | (0 << PCINT30) | (0 << PCINT29) | (0 << PCINT28) | (1 << PCINT27) | (1 << PCINT26) | (1 << PCINT25) | (1 << PCINT24);
- */
-volatile int Pm; //Pm = measured value
-volatile int Pr; //Desired value (motor or speed for us)
 
-//For positional Kp = .25, Ki = .01, Kd = 4 and time period = 1
+//For positional Kp = .25, Ki = .0077, Kd = 3.1 and time period = 1
 //For speed use: Kp = .4, Ki = .05, Kd = 2 and time_period = 1
 
 volatile float Kp = .25; //Kp = Proportional gain
-volatile float Ki = .01; //Ki = Integral gain
-volatile float Kd = 4; //Derivative gain
+volatile float Ki = .0077; //Ki = Integral gain
+volatile float Kd = 3.1; //Derivative gain
 volatile float D; //Current position - last position
 volatile float I; //Sum of errors
 volatile long P; //Reference position - measured position
 volatile long last_P = 0; //Last value of P
 volatile int desiredV = 0; //Desired velocity
-volatile float time_period = 1;
-volatile int Torq;
-volatile int myMotorSpeed = 0;
-volatile long target_position = 0;
+volatile float time_period = 1; //Time period or dt value
+volatile int Torq; //Torq to give the motor
+volatile int myMotorSpeed = 0; //Motor speed variable for easy access
+volatile long target_position = 0; //Target position
+
+//Determines if after a logging command has been given to log for speed/position
 volatile int spe_cm = 0;
 volatile int pos_cm = 0;
 volatile int log_cm = 0;
@@ -124,21 +113,27 @@ int main(void)
 
     while(1) {
         
-        lcd_goto_xy(0,0);
-        printf("T:%02ld", target_position);
-        lcd_goto_xy(0, 1);
-        //printf("S:%02d V:%02ldTv:%02d", settle_counts,global_cur_velo, desiredV);
-        printf("C:%02ld", global_counts_m1);
-
         
+        if(positionRequest == 1 || interpolatorRequest == 1) {
+            lcd_goto_xy(0,0);
+            printf("T:%02ld", target_position);
+            lcd_goto_xy(0,1);
+            printf("C:%02ld", global_counts_m1);
+        } else if(speedRequest == 1) {
+            lcd_goto_xy(0,0);
+            printf("S:%03ld", global_cur_velo);
+            lcd_goto_xy(0,1);
+            printf("DS:%03d E:%3ld", desiredV, desiredV - global_cur_velo);
+        }
+        //Check for serial input
         serial_check();
         check_for_new_bytes_received();
 
+        //If the logging index is full then print to screen and reset logging commands
         if(logging_index >= 500) {
             char tempBuffer[60];
             int length;
-
-            length = sprintf( tempBuffer, "Logging Start\r\n");
+            length = sprintf( tempBuffer, "Logging Printing\r\n");
             print_usb( tempBuffer, length );
             length = sprintf( tempBuffer, "Kp:%f,Ki:%f,Kd:%f\r\n", Kp, Ki, Kd);
             print_usb( tempBuffer, length );
@@ -154,7 +149,7 @@ int main(void)
     }
 }
 
-
+//Check if the motor has settled on a position
 void check_settled(void) {
     long topRange = target_position + 6;
     long botRange = target_position - 6;
@@ -206,17 +201,6 @@ void interpolator(void) {
 
 }
 
-void set_direction(int direction) {
-    if(direction ==  1) {
-        PORTC &= ~(0 << PORTC7);
-        //lcd_goto_xy(0,0);
-        //print("Clockwise");
-    } else if (direction == 0) {
-        //lcd_goto_xy(0,0);
-        //print("Counter Clockwise");
-        PORTC |= (1 << PORTC7);
-    }
-}
 
 void set_motor_speed(int my_speed) {
     if(my_speed < 0) {
@@ -233,10 +217,6 @@ void set_motor_speed(int my_speed) {
     }
     OCR2A = abs(my_speed);
     myMotorSpeed = my_speed;
-}
-
-int get_motor_speed() {
-    return OCR2A;
 }
 
 
@@ -262,8 +242,13 @@ ISR(TIMER1_COMPA_vect) {
         //Set this to lower the rate of logging
         //if(global_compa_counter % 33 == 0) {
             if (log_cm == 1 && (spe_cm == 1 || pos_cm == 1) && logging_index < 500) {
-                log_pr[logging_index] = target_position;
-                log_pm[logging_index] = global_counts_m1;
+                if(spe_cm == 1) {
+                    log_pr[logging_index] = desiredV;
+                    log_pm[logging_index] = global_cur_velo;
+                } else {
+                    log_pr[logging_index] = target_position;
+                    log_pm[logging_index] = global_counts_m1;
+                }
                 log_tj[logging_index] = myMotorSpeed;
                 log_p[logging_index] = P;
                 log_i[logging_index] = Ki * I;
@@ -386,4 +371,19 @@ void resetPID(void) {
     D = 0;
     last_P = 0;
 }
+
+void setPositionDefaults(void) {
+    //For positional Kp = .25, Ki = .01, Kd = 4 and time period = 1
+    Kp = .25;
+    Ki = .0077;
+    Kd = 3.1;
+}
+
+void setSpeedDefaults(void) {
+    //For speed use: Kp = .4, Ki = .05, Kd = 2 and time_period = 1}
+    Kp = .4;
+    Ki = .05;
+    Kd = 2;
+}
+
 

@@ -13,7 +13,6 @@ void enable_pwm_m1(void);
 void init_encoders(void);
 void enable_compa_isr(void);
 
-void set_direction(int);
 void set_motor_speed(int);
 
 void resetPID(void);
@@ -22,4 +21,7 @@ void pid_position(void);
 
 void interpolator(void);
 void check_settled(void);
+
+void setSpeedDefaults(void);
+void setPositionDefaults(void);
 #endif
