@@ -69,19 +69,45 @@ PCMSK3 = (0 << PCINT31) | (0 << PCINT30) | (0 << PCINT29) | (0 << PCINT28) | (1 
  */
 volatile int Pm; //Pm = measured value
 volatile int Pr; //Desired value (motor or speed for us)
-volatile float Kp = .525; //Kp = Proportional gain
-volatile float Ki = 0; //Ki = Integral gain
-volatile float Kd = 0; //Derivative gain
+
+//For positional Kp = .25, Ki = .01, Kd = 4 and time period = 1
+//For speed use: Kp = .4, Ki = .05, Kd = 2 and time_period = 1
+
+volatile float Kp = .25; //Kp = Proportional gain
+volatile float Ki = .01; //Ki = Integral gain
+volatile float Kd = 4; //Derivative gain
 volatile float D; //Current position - last position
 volatile float I; //Sum of errors
-volatile int P; //Reference position - measured position
-volatile int last_P = 0;
-volatile int V;
-volatile int desiredV = 0;
-volatile int posErr; //cur position - desired position
-volatile float time_period = .01;
+volatile long P; //Reference position - measured position
+volatile long last_P = 0; //Last value of P
+volatile int desiredV = 0; //Desired velocity
+volatile float time_period = 1;
 volatile int Torq;
 volatile int myMotorSpeed = 0;
+volatile long target_position = 0;
+volatile int spe_cm = 0;
+volatile int pos_cm = 0;
+volatile int log_cm = 0;
+
+//Arrays for logging
+volatile long log_pr[500];
+volatile long log_pm[500];
+volatile long log_tj[500];
+volatile long log_p[500];
+volatile float log_d[500];
+volatile float log_i[500];
+volatile long log_t[500];
+volatile int logging_index = 0;
+
+//Variables for type of request
+volatile int speedRequest = 0;
+volatile int positionRequest = 0;
+volatile int interpolatorRequest = 0;
+//Settle counts checks if the target is near the current position and increments if so
+volatile int settle_counts = 0;
+//Determines when to set the next target position for the interpolator
+static int interpTarget = 0;
+
 
 int main(void)
 {
@@ -89,51 +115,96 @@ int main(void)
     clear();	// clear the LCD
     
     lcd_init_printf();
+    //Intialize PWM for motors
     enable_pwm_m1();
+    //Intialize Compa ISR for 10 ms polling
     enable_compa_isr();
-    
-    //set_motor_speed(25);
-
+    //Initalize the encoder counting
     init_encoders();
 
-    
-    //T = Kp(Pr - Pm) + Ki(SUM over time (Pr-Pm)*dt) - Kd( delta(Pr-Pm) / dt )
-    //T = Output motor signal (torque)
-    //Pr = Desired value (motor or speed for us)
-    //Pm = Measured value
-    //Kp = Proportional gain
-    //Ki = Integral gain
-    //Kd = Derivative gain
-    
-    //Note that when controlling position, the derivative term at time i becomes:
-    //delta( Pr - Pm ) / dt  = ( Pr - Pm(i) ) - ( Pr - Pm(i-1) ) / dt = ( Pr - Pr - Pm(i) + Pm(i-1) ) / dt = -Velocity
-    //int Pr = 15;
-    //int Pm;
-
     while(1) {
+        
         lcd_goto_xy(0,0);
-        //printf("C:%ld", global_counts_m1);
-        //printf("I: %d", get_I());
-        
-        printf("I:% .2fD:% 04f", get_I(), D);
-        //printf("D:%d E:%d", desired, get_P());
-        //printf("D=% 06.1f P=%03d", D, P);
-        
-        
-        //printf("P: %d", get_P());
+        printf("T:%02ld", target_position);
         lcd_goto_xy(0, 1);
-        printf("Velo:%ld P:% 03d", global_cur_velo, P);
-        //printf("lP=%03d", last_P);
-        
-        
-        
+        //printf("S:%02d V:%02ldTv:%02d", settle_counts,global_cur_velo, desiredV);
+        printf("C:%02ld", global_counts_m1);
+
         
         serial_check();
         check_for_new_bytes_received();
 
+        if(logging_index >= 500) {
+            char tempBuffer[60];
+            int length;
+
+            length = sprintf( tempBuffer, "Logging Start\r\n");
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Kp:%f,Ki:%f,Kd:%f\r\n", Kp, Ki, Kd);
+            print_usb( tempBuffer, length );
+            for (int in = 0; in < 500; in++) {
+                length = sprintf( tempBuffer, "%6ld,%6ld,% 3ld,%6ld,%.3f,%.3f,%3ld\r\n", log_pr[in], log_pm[in], log_tj[in],log_p[in], log_i[in], log_d[in], log_t[in]);
+                print_usb( tempBuffer, length );
+            }
+            logging_index = 0;
+            spe_cm = 0;
+            pos_cm = 0;
+            log_cm = 0;
+        }
     }
 }
 
+
+void check_settled(void) {
+    long topRange = target_position + 6;
+    long botRange = target_position - 6;
+    if(global_counts_m1 <= topRange && global_counts_m1 >= botRange) {
+        settle_counts++;
+    }
+}
+
+void interpolator(void) {
+    //Use if you want interpolator defaults.
+    //Kp = .25; Ki = .0077; Kd = 3.1;
+
+    if(interpolatorRequest == 1) {
+        if(interpTarget == 0) {
+            interpTarget = 1;
+            target_position = global_counts_m1 + 562;
+        }
+        if(settle_counts >= 50) {
+            interpolatorRequest = 2;
+            interpTarget = 0;
+            settle_counts = 0;
+           
+        }
+    }
+    if(interpolatorRequest == 2) {
+        if(interpTarget == 0) {
+            interpTarget = 1;
+            target_position = global_counts_m1 - 2249;
+        }
+        if(settle_counts >= 50) {
+            interpolatorRequest = 3;
+            interpTarget = 0;
+            settle_counts = 0;
+           
+        }
+    }
+    if(interpolatorRequest == 3) {
+        if(interpTarget == 0) {
+            interpTarget = 1;
+            target_position = global_counts_m1 + 31;
+        }
+        if(settle_counts >=50) {
+            interpolatorRequest = 0;
+            interpTarget = 0;
+            settle_counts = 0;
+        }
+    }
+    pid_position();
+
+}
 
 void set_direction(int direction) {
     if(direction ==  1) {
@@ -154,7 +225,6 @@ void set_motor_speed(int my_speed) {
     } else {
         //set_direction(1);
         PORTC &= ~(1 << PORTC7);
-
     }
     if (my_speed < -255) {
         my_speed = -255;
@@ -163,23 +233,6 @@ void set_motor_speed(int my_speed) {
     }
     OCR2A = abs(my_speed);
     myMotorSpeed = my_speed;
-
-    
-    
-    
-    /*if(abs(my_speed) <= 255) {
-        OCR2A = abs(my_speed);
-        //lcd_goto_xy(0,1);
-        //printf("Speed:%d", my_speed);
-    } else {
-        if(my_speed < 0) {my_speed = -255;} else {my_speed = 255;}
-        OCR2A = 255;
-        //lcd_goto_xy(0,1);
-        //printf("Speed:%d", my_speed);
-    }*/
-    
-    
-    
 }
 
 int get_motor_speed() {
@@ -192,119 +245,74 @@ ISR(TIMER1_COMPA_vect) {
     global_compa_counter++;
     //Calculate velocity by determining the number of encoder counts since the last poll
     global_cur_velo = global_counts_m1 - global_last_enc_value;
-    V = global_counts_m1 - global_last_enc_value;
-    
-    //PID STUFF
-    //Set D value: cur_position - measured_position
-    //set_D(global_counts_m1);
-    //Set P value: desired positon - measured_position
-    //set_P(desired, global_cur_velo);
-    P = desiredV - global_cur_velo;
-    set_I(P);
-    
-    D = (P - last_P) / time_period;
-    //D = (last_P - P);
-    //- (int)(Kd * D)
-    Torq = (int)((Kp * P) + (Ki * get_I()) - (Kd * D));
-    //int my_speed = OCR2A;
-    myMotorSpeed += Torq;
-    
-    set_motor_speed(myMotorSpeed);
+
+    //Comment out below to adjust controller frequency updates
+    //if (global_compa_counter % 20 == 0) {
+        if(positionRequest == 1) {
+            pid_position();
+        } else if (speedRequest == 1) {
+            pid_speed();
+        } else if (interpolatorRequest > 0) {
+            interpolator();
+            //pid_position();
+        }
+        //Save current error as the last error
+        last_P = P;
+        set_motor_speed(myMotorSpeed);
+        //Set this to lower the rate of logging
+        //if(global_compa_counter % 33 == 0) {
+            if (log_cm == 1 && (spe_cm == 1 || pos_cm == 1) && logging_index < 500) {
+                log_pr[logging_index] = target_position;
+                log_pm[logging_index] = global_counts_m1;
+                log_tj[logging_index] = myMotorSpeed;
+                log_p[logging_index] = P;
+                log_i[logging_index] = Ki * I;
+                log_d[logging_index] = Kd * D;
+                log_t[logging_index] = Torq;
+                logging_index++;
+            }
+        //}
+
+    //Comment out below to adjust controller frequency updates
+    //}
     
     //Save the current encoders counts as the last encoder count value for the next poll
     global_last_enc_value = global_counts_m1;
-    //Save current error as the last error
-    last_P = P;
     
 }
 
 
-int get_Torq(void) {
-    return Torq;
+void pid_speed(void) {
+    //Speed Error == desired encoder counts per 10ms and cur encoder counts per 10ms
+    P = desiredV - global_cur_velo;
+    //Integral
+    I += (P * time_period);
+    if (I > 1000) {I = 1000;} else if (I < -1000) {I = -1000;}
+    //Derivative
+    D = (P - last_P) / time_period;
+    //Torq
+    Torq = (int)((Kp * P) + (Ki * I) + (Kd * D));
+    //Set motor speed to it's last value + torque
+    myMotorSpeed += Torq;
 }
 
-int get_desiredV(void) {
-    return desiredV;
-}
-
-int get_V(void) {
-    return V;
-}
-
-int get_P(void) {
-    return P;
-}
-
-void set_P(int desired, int current) {
-    P = desired - current;
-}
-
-
-float get_I(void) {
-    return I;
-}
-
-void set_I(int error) {
-    int max = 1000;
-    int min = -1000;
-    //I += get_I() + get_P();
-    if(I < max && I > min) {
-        I +=  error * time_period;
-    } else if(I > max) {
-        I = max;
-    } else if (I < min) {
-        I = min;
-    }
-}
-
-float get_D(void) {
-    return D;
-}
-
-void set_D(int cur_position) {
-}
-
-int get_Pm(void) {
-    return Pm;
-}
-
-int get_Pr(void) {
-    return Pr;
+void pid_position(void) {
+    //Position Error -- target position minus the current position
+    P = target_position - global_counts_m1;
+    //Integral
+    I += (P * time_period);
+    if (I > 1000) {I = 1000;} else if (I < -1000) {I = -1000;}
+    //Derivative
+    D = (P - last_P) / time_period;
+    //Torq
+    Torq = (int)((Kp * P) + (Ki * I) + (Kd * D));
+    //Set motor speed to it's last value + torque
+    myMotorSpeed = Torq;
+    check_settled();
 }
 
 
-float get_Kp(void) {
-    return Kp;
-}
 
-float get_Kd(void) {
-    return Kd;
-}
-
-float get_Ki(void) {
-    return Ki;
-}
-
-
-void set_Pm(int Pm_val) {
-    Pm = Pm_val;
-}
-
-void set_Pr(int Pr_val) {
-    Pr = Pr_val;
-}
-
-void set_Kp(float Kp_val) {
-    Kp = Kp_val;
-}
-
-void set_Kd(float Kd_val) {
-    Kd = Kd_val;
-}
-
-void set_Ki(float Ki_val) {
-    Ki = Ki_val;
-}
 
 
 void enable_pwm_m1(void) {
@@ -334,6 +342,7 @@ void enable_pwm_m1(void) {
 }
 
 
+//Wrote my own function to determine encoder counts.
 ISR(PCINT3_vect)
 {
     unsigned int m1a_val = GET_M1_ENCA;
@@ -348,15 +357,9 @@ ISR(PCINT3_vect)
     global_last_m1b_val = m1b_val;
 }
 
-
+//Intialize encoder interrupts.
 void init_encoders(void) {
-    //DDRD &= ~(PIND3 | PIND2);
-    //DDRD = (1 << DDD7) | (0 << DDD6) | (0 << DDD5) | (0 << DDD4) | (0 << DDD3) | (0 << DDD2) | (0 << DDD1) | (0 << DDD0);
-    //DDRD &= ~(1 << PORTD3) | (1 << PORTD2);
-    //See 13.2.6 for PCINT31 - PCINT24
     PCMSK3 = (0 << PCINT31) | (0 << PCINT30) | (0 << PCINT29) | (0 << PCINT28) | (1 << PCINT27) | (1 << PCINT26) | (1 << PCINT25) | (1 << PCINT24);
-    //Table 13.2.4 page 69
-    //PCICR = (0x0 << 7) | (0x0 << 6) | (0x0 << 5) | (0x0 << 4) | (1 << PCIE3) | (0x0 << PCIE2) | (0x0 << PCIE1) | (0x0 << PCIE0);
     PCICR = 0xFF;
     PCIFR = 0xFF;
     global_last_m1a_val = GET_M1_ENCA;
@@ -364,21 +367,7 @@ void init_encoders(void) {
     sei();
 }
 
-int degrees_to_revs(int degrees) {
-    return degrees * 6.247222222;
-}
-
-int move_degrees(int degrees, int direction) {
-    long cur_position = global_counts_m1;
-    if (direction == 1) {
-        set_direction(1);
-    } else {
-        set_direction(0);
-    }
-}
-
-
-
+//Enable comp A ISR
 void enable_compa_isr(void) {
     //
     TCCR1A = (1 << COM1A1) | (0 << COM1A0) | (0 << COM1B1) | (0 << COM1B0) | (0 << 3) | (0 << 2) | (0 << WGM11) | (0 << WGM10);
@@ -388,5 +377,13 @@ void enable_compa_isr(void) {
     OCR1A = 25000;
     //
     TIMSK1 = (0x0 << 7) | (0x0 << 6) | (0 << ICIE1) | (0x0 << 4) | (0x0 << 3) | (0 << OCIE1B) | (1 << OCIE1A) | (0 << TOIE1);
+}
+
+//Reset PID values
+void resetPID(void) {
+    I = 0;
+    P = 0;
+    D = 0;
+    last_P = 0;
 }
 

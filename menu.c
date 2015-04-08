@@ -15,6 +15,22 @@ extern int global_last_m1a_val;
 extern int global_last_m1b_val;
 extern int myMotorSpeed;
 extern int desiredV;
+//extern long target;
+extern long target_position;
+extern long P;
+extern float Kp;
+extern float I;
+extern float Ki;
+extern float D;
+extern float Kd;
+extern int Torq;
+extern float time_period;
+extern int spe_cm;
+extern int pos_cm;
+extern int log_cm;
+extern int positionRequest;
+extern int speedRequest;
+extern int interpolatorRequest;
 
 
 // local "global" data structures
@@ -48,8 +64,9 @@ void init_menu() {
 	//memcpy_P( send_buffer, PSTR("USB Serial Initialized\r\n"), 24 );
 	//snprintf( printBuffer, 24, "USB Serial Initialized\r\n");
 	//print_usb( printBuffer, 24 );
-	print_usb( "USB Serial Initialized DDDD\r\n", 28);
-
+	//print_usb( "USB Serial Initialized\r\n", 28);
+    int length = sprintf( printBuffer, "USB Serial Initialized\r\n");
+    print_usb( printBuffer, length );
 	//memcpy_P( send_buffer, MENU, MENU_LENGTH );
 	print_usb( MENU, MENU_LENGTH );
 }
@@ -82,28 +99,36 @@ void process_received_string(const char* buffer)
         //L/l: Start/Stop Logging (print) the values of Pr, Pm, and T.
         case 'l':
         case 'L':
-            //length = sprintf( tempBuffer, "Encoder Counts: %lu\r\n", global_counts_m1);
-            //print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Encoder Counts: %ld\r\n", global_counts_m1);
+            length = sprintf( tempBuffer, "Log enabled\r\n");
             print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Current motor speed: %d\r\n", myMotorSpeed);
+            length = sprintf( tempBuffer, "Provide position(txxxx) or speed(sxx) command\r\n");
             print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Error: %d\r\n", get_P());
-            print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Torq: %d\r\n", get_Torq());
-            print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Kp:%.3f, Ki:%.3f, Kd:%.3f\r\n", get_Kp(), get_Ki(), get_Kd());
-            //length = sprintf( tempBuffer, "length:%d", length);
-            print_usb(tempBuffer, length );
-            length = sprintf( tempBuffer, "P:%d I:% .3f D% .3f\r\n", get_P(), get_I(), get_D());
-            print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Desired V:%d Current:V%d\r\n",desiredV, get_V());
-            print_usb( tempBuffer, length );
+            spe_cm = 0;
+            pos_cm = 0;
+            log_cm = 1;
             break;
         //V/v: View the current values Kd, Kp, Vm, Pr, Pm, and T
         case 'v':
         case 'V':
-            
+            length = sprintf( tempBuffer, "Encoder Counts: %ld\r\n", global_counts_m1);
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Current motor speed: %d\r\n", myMotorSpeed);
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Error: %ld\r\n", P);
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Torq: %d\r\n", Torq);
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Kp:% .5f, Ki:% .5f, Kd:% .5f\r\n", Kp, Ki, Kd);
+            print_usb(tempBuffer, length );
+            length = sprintf( tempBuffer, "P:% 2ld I:% 4.2f D% 4.2f\r\n", P, I, D);
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Desired V:%d Current:V%d\r\n",desiredV, global_cur_velo);
+            print_usb( tempBuffer, length );
+            float total = (Kp * P) + (Ki * I) + (Kd * D);
+            length = sprintf( tempBuffer, "Formula P:% .3f I:% .4f D:% .2f T:% .1f\r\n",Kp * P, Ki * I, Kd * D, total);
+            print_usb( tempBuffer, length );
+            length = sprintf( tempBuffer, "Period: %f\r\n", time_period);
+            print_usb( tempBuffer, length );
             break;
         //R/r : Set the reference position (use unit "counts")
         case 'r':
@@ -112,33 +137,57 @@ void process_received_string(const char* buffer)
         //S/s : Set the reference speed (use unit "counts"/sec)
         case 's':
         case 'S':
-            //set_desired_speed
+            //Reset PID values
+            resetPID();
+            //Set speed command to true
+            spe_cm = 1;
+            //Set speed reques to true
+            speedRequest = 1;
+            //Set position reques to false
+            positionRequest = 0;
+            //Set interpolator request to false
+            interpolatorRequest = 0;
+            //Set the desired velocity to the passed value
             desiredV = value;
             break;
-        //P: Increase Kp by an amount of your choice*
+        //P: Set Kp value by passing a value
         case 'P':
-            set_Kp(value);
-            break;
-        //p: Decrease Kp by an amount of your choice
         case 'p':
+            Kp = value;
             break;
-        //D: Increase Kd by an amount of your choice
+        //D: Set Kd value by passing a value
         case 'D':
-            set_Kd(value);
-            break;
-        //d: Decrease Kd by an amount of your choice
         case 'd':
+            Kd = value;
             break;
-        //I: Increase Ki by an amount of your choice
+        //I: Set Ki value by passing a value
         case 'I':
-            set_Ki(value);
-        //i: Decrease Ki by an amount of your choice
         case 'i':
+            Ki = value;
             break;
-        //t: Execute trajectory
+        //T: Set the time period, defaults to 1.
+        case 'T':
+            time_period = value;
+            break;
         case 't':
-            set_motor_speed(value);
-             break;
+            //target = value;
+            target_position = global_counts_m1 + value;
+            length = sprintf( tempBuffer, "Target Loc:% 05ld Current Loc:% 05ld\r\n", target_position, global_counts_m1);
+            print_usb( tempBuffer, length );
+            resetPID();
+            positionRequest = 1;
+            speedRequest = 0;
+            interpolatorRequest = 0;
+            pos_cm = 1;
+            break;
+        case 'U':
+            resetPID();
+            positionRequest = 0;
+            speedRequest = 0;
+            pos_cm = 1;
+            spe_cm = 0;
+            interpolatorRequest = 1;
+            break;
         default:
             print_usb( "Command does not compute.\r\n", 27 );
     }
