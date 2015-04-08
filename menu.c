@@ -89,9 +89,9 @@ void process_received_string(const char* buffer)
 	parsed = sscanf(buffer, "%c %f", &op_char, &value);
 #ifdef ECHO2LCD
 	lcd_goto_xy(0,0);
-	printf("Got %c %d\n", op_char, value);
+	printf("Got %c %f\n", op_char, value);
 #endif
-	length = sprintf( tempBuffer, "\r\n0p:%c V:%d\r\n", op_char, value );
+	length = sprintf( tempBuffer, "\r\n0p:%c V:%f\r\n", op_char, value );
 	print_usb( tempBuffer, length );
 
 	// Check valid command and implement
@@ -101,7 +101,7 @@ void process_received_string(const char* buffer)
         case 'L':
             length = sprintf( tempBuffer, "Log enabled\r\n");
             print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Provide position(txxxx) or speed(sxx) command\r\n");
+            length = sprintf( tempBuffer, "Provide position(R/r####) or speed(S/s##) command\r\n");
             print_usb( tempBuffer, length );
             spe_cm = 0;
             pos_cm = 0;
@@ -122,7 +122,7 @@ void process_received_string(const char* buffer)
             print_usb(tempBuffer, length );
             length = sprintf( tempBuffer, "P:% 2ld I:% 4.2f D% 4.2f\r\n", P, I, D);
             print_usb( tempBuffer, length );
-            length = sprintf( tempBuffer, "Desired V:%d Current:V%d\r\n",desiredV, global_cur_velo);
+            length = sprintf( tempBuffer, "Desired V:%d Current V:%d\r\n",desiredV, global_cur_velo);
             print_usb( tempBuffer, length );
             float total = (Kp * P) + (Ki * I) + (Kd * D);
             length = sprintf( tempBuffer, "Formula P:% .3f I:% .4f D:% .2f T:% .1f\r\n",Kp * P, Ki * I, Kd * D, total);
@@ -133,6 +133,14 @@ void process_received_string(const char* buffer)
         //R/r : Set the reference position (use unit "counts")
         case 'r':
         case 'R':
+            target_position = global_counts_m1 + value;
+            length = sprintf( tempBuffer, "Target Loc:% 05ld Current Loc:% 05ld\r\n", target_position, global_counts_m1);
+            print_usb( tempBuffer, length );
+            resetPID();
+            positionRequest = 1;
+            speedRequest = 0;
+            interpolatorRequest = 0;
+            pos_cm = 1;
             break;
         //S/s : Set the reference speed (use unit "counts"/sec)
         case 's':
@@ -169,23 +177,31 @@ void process_received_string(const char* buffer)
         case 'T':
             time_period = value;
             break;
+        //t: Execute interpolator, reset PID and set command flags.
         case 't':
-            target_position = global_counts_m1 + value;
-            length = sprintf( tempBuffer, "Target Loc:% 05ld Current Loc:% 05ld\r\n", target_position, global_counts_m1);
-            print_usb( tempBuffer, length );
-            resetPID();
-            positionRequest = 1;
-            speedRequest = 0;
-            interpolatorRequest = 0;
-            pos_cm = 1;
-            break;
-        case 'U':
             resetPID();
             positionRequest = 0;
             speedRequest = 0;
             pos_cm = 1;
             spe_cm = 0;
             interpolatorRequest = 1;
+            break;
+        //Set Positional defaults
+        case 'U':
+            //setPositionDefaults();
+            Kp = .25;
+            Ki = .0077;
+            Kd = 3.1;
+            length = sprintf(tempBuffer, "Position defaults set: Kp=%2.3f Ki=%2.4f Kd=%3.3f\r\n", Kp, Ki, Kd);
+            print_usb( tempBuffer, length );
+            break;
+        case 'Y':
+            //setSpeedDefaults();
+            Kp = .4;
+            Ki = .05;
+            Kd = 2;
+            length = sprintf(tempBuffer, "Speed defaults set: Kp=%2.3f Ki=%2.4f Kd=%3.3f\r\n", Kp, Ki, Kd);
+            print_usb( tempBuffer, length );
             break;
         default:
             print_usb( "Command does not compute.\r\n", 27 );
